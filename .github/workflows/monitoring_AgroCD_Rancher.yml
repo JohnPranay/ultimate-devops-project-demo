@@ -1,0 +1,113 @@
+name: Deploy Monitoring Stack to AWS EKS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Prometheus, Grafana, Rancher, ArgoCD
+    runs-on: ubuntu-latest
+
+    env:
+      KUBECONFIG: /home/runner/.kube/config
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubeconfig from secret
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+        export KUBECONFIG=$HOME/.kube/config
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: v3.14.0
+
+    - name: Create Namespaces
+      run: |
+        kubectl create ns monitoring --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create ns cattle-system --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create ns argocd --dry-run=client -o yaml | kubectl apply -f -
+
+    # -----------------------------
+    # PROMETHEUS
+    # -----------------------------
+    - name: Add Prometheus Helm repo
+      run: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+
+    # Install Prometheus only (disable Grafana)
+    - name: Install Prometheus (no Grafana)
+      run: |
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+        --namespace monitoring \
+        --set grafana.enabled=false \
+        --set prometheus.service.type=LoadBalancer
+
+    - name: Add Grafana Helm repo
+      run: helm repo add grafana https://grafana.github.io/helm-charts && helm repo update
+
+    - name: Install Grafana separately
+      run: |
+        helm upgrade --install grafana grafana/grafana \
+        --namespace monitoring \
+        --set service.type=LoadBalancer \
+        --set adminPassword='admin123' \
+        --set persistence.enabled=true \
+        --set persistence.size=5Gi \
+        --set persistence.storageClassName=gp2
+
+
+
+    # -----------------------------
+    # RANCHER
+    # -----------------------------
+    - name: Install Cert-Manager (required by Rancher)
+      run: |
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+
+    - name: Add Rancher Helm repo
+      run: helm repo add rancher-latest https://releases.rancher.com/server-charts/latest && helm repo update
+
+    - name: Install Rancher
+      run: |
+        helm upgrade --install rancher rancher-latest/rancher \
+          --namespace cattle-system \
+          --set hostname=rancher.local \
+          --set replicas=1 \
+          --set bootstrapPassword=admin \
+          --set ingress.tls.source=secret \
+          --set service.type=LoadBalancer
+
+    # -----------------------------
+    # ARGOCD
+    # -----------------------------
+    - name: Add ArgoCD Helm repo
+      run: helm repo add argo https://argoproj.github.io/argo-helm && helm repo update
+
+    - name: Install ArgoCD
+      run: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd \
+          --set server.service.type=LoadBalancer \
+          --set server.admin.password='admin123'
+
+    # -----------------------------
+    # Output LoadBalancer URLs
+    # -----------------------------
+    - name: Show service URLs
+      run: |
+        echo "Prometheus:" && kubectl get svc -n monitoring -l app.kubernetes.io/name=prometheus
+        echo "Grafana:" && kubectl get svc -n monitoring -l app.kubernetes.io/name=grafana
+        echo "Rancher:" && kubectl get svc -n cattle-system -l app.kubernetes.io/name=rancher
+        echo "Argo CD:" && kubectl get svc -n argocd -l app.kubernetes.io/component=server
