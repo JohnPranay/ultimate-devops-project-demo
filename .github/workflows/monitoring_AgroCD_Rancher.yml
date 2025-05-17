@@ -65,7 +65,7 @@ jobs:
         --set adminPassword='admin123' \
         --set persistence.enabled=true \
         --set persistence.size=5Gi \
-        --set persistence.storageClassName=gp2
+        --set persistence.storageClassName=gp2-immediate
 
 
 
