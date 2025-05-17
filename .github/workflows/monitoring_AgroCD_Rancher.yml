@@ -53,6 +53,7 @@ jobs:
         --namespace monitoring \
         --set grafana.enabled=false \
         --set prometheus.service.type=LoadBalancer
+        --set prometheusOperator.admissionWebhooks.enabled=false
 
     - name: Add Grafana Helm repo
       run: helm repo add grafana https://grafana.github.io/helm-charts && helm repo update
